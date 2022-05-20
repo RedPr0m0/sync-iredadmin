@@ -504,9 +504,21 @@ class main:
                 print('Modify user :', resultCheck[2])
                 self.ldap_dst.updateUser(resultCheck[1], resultCheck[2])
             elif resultCheck[0] == 'ADD':
-                print('Dst not found, adding user :', resultCheck[2])
+                print('Destination not found, adding new user :', resultCheck[2])
                 self.ldap_dst.addUser(resultCheck[1], resultCheck[2]
                                       , settings.SERVER_DESTINATION)
+
+    def __syncIMAPEmail(self, domain, user):
+        # The specified user has advantage over the domain
+        if not user or user == '*':
+            user_list = self.ldap_src.getUserList(domain)
+        else:
+            user_list = [user]
+
+        for item_user in user_list:
+
+
+
 
 
 if __name__ == '__main__':

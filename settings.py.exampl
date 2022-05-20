@@ -3,6 +3,9 @@
 # Mail address send protocol.
 mailsend = 'xxx@iredmail.org'
 
+# count thread for sync mail the imap protocol
+max_thread_sync_mail = 5
+
 # Setting source server LDAP.
 SERVER_SOURCE = {
     server='IP or Domain name',
@@ -12,6 +15,9 @@ SERVER_SOURCE = {
     bind_password='',
     use_ssl=False,
     storage_mail_base_directory = '/var/vmail/vmail1',
+    #for sync mail imap see https://docs.iredmail.org/dovecot.master.user.html
+    master_usr='my_master_user@not-exist.com',
+    master_pwd='PW',
     #over_ssh=dict(
     #    server='',
     #    port=22,
@@ -30,6 +36,9 @@ SERVER_DESTINATION = {
     bind_password='',
     use_ssl=False,
     storage_mail_base_directory = '/var/vmail/vmail1',
+    #for sync mail imap see https://docs.iredmail.org/dovecot.master.user.html
+    master_usr='my_master_user@not-exist.com',
+    master_pwd='pw',
     #over_ssh=dict(
     #    server='',
     #    port=22,
