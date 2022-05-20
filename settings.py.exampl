@@ -1,0 +1,41 @@
+# General settings.
+#
+# Mail address send protocol.
+mailsend = 'xxx@iredmail.org'
+
+# Setting source server LDAP.
+SERVER_SOURCE = {
+    server='IP or Domain name',
+    port=389,
+    basedn='o=domains,dc=srv,dc=dc=com,dc=ua',
+    bind_dn='',
+    bind_password='',
+    use_ssl=False,
+    storage_mail_base_directory = '/var/vmail/vmail1',
+    #over_ssh=dict(
+    #    server='',
+    #    port=22,
+    #    username='',
+    #    password='',
+    #    privatekey=''
+    #)
+}
+
+# Setting destination server LDAP.
+SERVER_DESTINATION = {
+    server='IP or Domain name',
+    port=386,
+    basedn='o=domains,dc=srv,dc=dc=com,dc=ua',
+    bind_dn='',
+    bind_password='',
+    use_ssl=False,
+    storage_mail_base_directory = '/var/vmail/vmail1',
+    #over_ssh=dict(
+    #    server='',
+    #    port=22,
+    #    username='',
+    #    password='',
+    #    privatekey=''
+    #)
+}
+
