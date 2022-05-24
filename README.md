@@ -1,21 +1,32 @@
-# sync-iredadmin
+# sync-iredadmin 
 
-sync-iRedAdmin is a python scrypt to sync LDAP database backend
+## Overview
 
-usage: sync-iredadmin-LDAP.py [-h] [-d [DOMAINSYNC]] [-u [USERSYNC]] [-m] {filter} ...
-Sync user ldap backend iredadmin
+Sync-iredadmin is an python scrypt for syncing domain, user, copying and migrating email
+mailboxes between two iRedAdmin servers, one way, and without duplicates.
+Sync domain and user only used iRedAdmin LDAP backend.
 
-options:
--h, --help            show this help message and exit
--d [DOMAINSYNC]       Sync domain [only domain]
--u [USERSYNC],        Sync user [only user]
--m, --mailsync        sync mail on imap protocol
+## Download
+Download the latest version from the [releases](https://github.com/d0codesoft/sync-iredadmin/releases/latest) page.
 
-filter                parameters filter email sync
-  {min,max}   type age email
-  countage    count days age mail (min or max)     
+## Used scrypt command line
+ 
+    sync-iredadmin-LDAP.py [-h] [-d [DOMAINSYNC]] [-u [USERSYNC]] [-m] {filter} ...
 
-For the script to work correctly, you must set the configuration file 'setting.py'. 
-Mail synchronize used master password from instruction on iRedMail  
+    options: 
+        -h, --help            show this help message and exit
+        -d [DOMAINSYNC]       Sync domain [only domain]
+        -u [USERSYNC],        Sync user [only user]
+        -m, --mailsync        sync mail on imap protocol
 
->https://docs.iredmail.org/dovecot.master.user.html
+        filter                parameters filter email sync
+          {min,max}   type age email
+          countage    count days age mail (min or max)     
+
+## TODO
+- [ ] Write log file
+- [ ] Check error used LDAP and IMAP sync
+
+## License
+
+ImapSync Client is licensed under the [MIT License](LICENSE)
