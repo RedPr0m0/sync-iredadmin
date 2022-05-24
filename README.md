@@ -6,9 +6,6 @@ Sync-iredadmin is an python scrypt for syncing domain, user, copying and migrati
 mailboxes between two iRedAdmin servers, one way, and without duplicates.
 Sync domain and user only used iRedAdmin LDAP backend.
 
-## Download
-Download the latest version from the [releases](https://github.com/d0codesoft/sync-iredadmin/releases/latest) page.
-
 ## Used scrypt command line
  
     sync-iredadmin-LDAP.py [-h] [-d [DOMAINSYNC]] [-u [USERSYNC]] [-m] {filter} ...
