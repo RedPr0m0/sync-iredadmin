@@ -7,18 +7,20 @@
 #   python MigrateUserLDAP.py
 # ------------------------------------------------------------------
 
-import os
-import sys
-import logging
-import time
-import datetime
 import argparse
-from subprocess import Popen, PIPE
-from typing import List, Dict
+import imaplib
 import re
+import socket
+import sys
+import time
+import ssl
 import ldap3
 from ldap3 import Server, Connection, ALL
+import email
+import datetime
 import settings
+import concurrent.futures
+import functools
 
 # Default groups which will be created while create a new domain.
 # WARNING: Don't use unicode string here.
@@ -47,8 +49,8 @@ USER_ATTRS_SYNC = (
     'employeeNumber', 'title', 'senderRelayHost',
     'shadowAddress', 'mailForwardingAddress', 'memberOfGroup',
     'enabledService', 'disabledService',
-    'domainGlobalAdmin',    # Global admin
-    'shadowLastChange',     # Password last change, it's number of days since
+    'domainGlobalAdmin',  # Global admin
+    'shadowLastChange',  # Password last change, it's number of days since
     'givenName',
     'mobile', 'telephoneNumber', 'preferredLanguage', 'memberOfGroup',
     'userRecipientBccAddress', 'userSenderBccAddress',
@@ -64,8 +66,13 @@ USER_ATTRS_ALL = tuple(list(USER_ATTRS_SYNC) + [
 ])
 
 # Email address.
-email = r"""[\w\-\#][\w\-\.\+\=\/\&\#]*@[\w\-][\w\-\.]*\.[a-zA-Z0-9\-]{2,15}"""
-cmp_email = re.compile(r"^" + email + r"$", re.IGNORECASE | re.DOTALL)
+RE_EMAIL_TEST = r"""[\w\-\#][\w\-\.\+\=\/\&\#]*@[\w\-][\w\-\.]*\.[a-zA-Z0-9\-]{2,15}"""
+cmp_email = re.compile(r"^" + RE_EMAIL_TEST + r"$", re.IGNORECASE | re.DOTALL)
+PATTERN_FLAGS_ID = r'FLAGS \(\\\\(.*?)\)'
+cmp_flags_email = re.compile(PATTERN_FLAGS_ID)
+PATERN_SIZE_MAIL = r'RFC822.SIZE\s(.*?)\s'
+cmp_size_mail = re.compile(PATERN_SIZE_MAIL)
+
 
 class LdapServer:
 
@@ -143,7 +150,7 @@ class LdapServer:
 
         return 'o=domains{dn}'.format(dn=bDN)
 
-    #region Domain
+    # region Domain
     def getDomainList(self):
         searchDN = self.baseDN
         domain_list = self.con.extend.standard.paged_search(search_base=searchDN,
@@ -205,7 +212,8 @@ class LdapServer:
             return 'NONE', domain, None
 
         return 'MODIFY', domain, resDiff
-    #endregion
+
+    # endregion
 
     def getUserList(self, domain='*'):
         searchDN = self.baseDN
@@ -412,6 +420,299 @@ class LdapServer:
         return False
 
 
+class IMAPServer:
+
+    def __init__(self):
+        self.server = None
+        self.connect_imap = None
+        self.master_login = None
+        self.master_pwd = None
+
+    def __del__(self):
+        self.disconnect()
+
+    def disconnect(self):
+        if not self.connect_imap:
+            self.server = None
+            self.connect_imap = None
+
+    def connect(self, config):
+        self.disconnect()
+
+        l_timeout = float(config.get('timeout', 30))
+        l_server = config.get('server')
+        self.server = l_server
+        l_port = config.get('port', 143)
+        l_secure = config.get('secure', 'None')
+        self.master_login = config.get('master_usr')
+        self.master_pwd = config.get('master_pwd')
+
+        result_connect = False
+
+        try:
+            socket.setdefaulttimeout(l_timeout)
+            if 'SSL' in l_secure:
+                print("Connecting to '%s' TCP port %d, SSL" % (l_server, l_port))
+                if 'insecure' in l_secure:
+                    ssl_context = ssl._create_unverified_context()
+                    self.connect_imap = imaplib.IMAP4_SSL(host=l_server, port=l_port, ssl_context=ssl_context)
+                else:
+                    self.connect_imap = imaplib.IMAP4_SSL(l_server, l_port)
+            elif 'TLS' in l_secure:
+                print("Connecting to '%s' TCP port %d, SSL" % (l_server, l_port))
+                self.connect_imap = imaplib.IMAP4(l_server, l_port)
+
+                if 'insecure' in l_secure:
+                    tls_context = ssl._create_unverified_context()
+                else:
+                    tls_context = ssl.create_default_context()
+
+                self.connect_imap.starttls(ssl_context=tls_context)
+            else:
+                print("Connecting to '%s' TCP port %d" % (l_server, l_port))
+                self.connect_imap = imaplib.IMAP4(l_server, l_port)
+
+            result_connect = True
+        except socket.gaierror as e:
+            (err, desc) = e
+            print("ERROR: problem looking up server '%s' (%s %s)" % (l_server, err, desc))
+        except socket.error as e:
+            print("ERROR: could not connect to '%s' (%s)" % (l_server, e))
+        except Exception as e:
+            print("ERROR: Host %s" % l_server)
+            print(str(e))
+
+        return result_connect
+
+    def loginUser(self, user):
+
+        l_pw = self.master_pwd
+        l_login_user = '{user}*{master}'.format(user=user, master=self.master_login)
+
+        result_login = False
+
+        try:
+            self.connect_imap.login(l_login_user, l_pw)
+            result_login = True
+            print("Success login on [%s] with user [%s]" % (self.server, user))
+        except socket.gaierror as e:
+            (err, desc) = e
+            print("ERROR: problem looking up server '%s' (%s %s)" % (self.server, err, desc))
+        except socket.error as e:
+            print("ERROR: could not connect to '%s' (%s)" % (self.server, e))
+        except Exception as e:
+            print("ERROR: Host %s, user=%s" % (self.server, user))
+            print(str(e))
+
+        return result_login
+
+    def logOut(self):
+        self.connect_imap.logout()
+
+    def listMailboxes(self):
+        (res, data) = self.connect_imap.list()
+        if res != 'OK':
+            raise RuntimeError('Unvalid reply: ' + res)
+
+        list_re = re.compile(r'\((?P<flags>.*)\)\s+"(?P<delimiter>.*)"\s+"?(?P<name>[^"]*)"?')
+        list_folder = []
+        for f in data:
+            m = list_re.match(f.decode('UTF-8'))
+            if not m:
+                raise RuntimeError('No match: ' + f.decode('UTF-8'))
+
+            flags, delimiter, mailbox = m.groups()
+            # print('server:', self.server, 'folder:', f.decode('UTF-8'), 'mailbox:', mailbox)
+            list_folder.append({
+                'flags': flags,
+                'delimiter': delimiter,
+                'mailbox': mailbox,
+                'noselect': ('Noselect' in flags)
+                # 'messages': mcount,
+                # 'size': msize
+            })
+
+        return list_folder
+
+    def capability(self):
+        typ, data = self.connect_imap.capability()
+        return data[0].decode('utf-8')
+
+    def createMailbox(self, name_mailbox):
+        self.connect_imap.create(name_mailbox)
+
+    def openFolder(self, folder_name, read_only=True):
+        rv, data = self.connect_imap.select(folder_name, read_only)
+        res = rv == 'OK'
+        return res, data
+
+    def closeFolder(self):
+        self.connect_imap.unselect()
+
+    def getListMessagesMailBox(self, param_search={}):
+        msg_ids = []
+        result = False
+        cmd_search = self.__getCmdSearchMail(param_search)
+        try:
+            rv, data = self.connect_imap.search(None, '(ALL)', cmd_search)
+            if rv != 'OK':
+                raise RuntimeError('Unvalid reply: ' + rv)
+            msg_ids = data[0].split()
+            result = True
+        except Exception as e:
+            print(" Exception getListIDMessageMailBox: ", str(e))
+
+        return result, msg_ids
+
+    def __getCmdSearchMail(self, param_search):
+        maxage = param_search.get('maxage')
+        minage = param_search.get('minage')
+
+        cmd = '(undeleted'
+        if maxage:
+            date = (datetime.date.today() - datetime.timedelta(int(maxage))).strftime("%d-%b-%Y")
+            cmd += ' SENTSINCE {data}'.format(data=date)
+
+        if minage:
+            date = (datetime.date.today() - datetime.timedelta(int(minage))).strftime("%d-%b-%Y")
+            cmd += ' SENTBEFORE {data}'.format(data=date)
+        cmd += ')'
+        return cmd
+
+    def getMessageId(self, mail_imap_id):
+        res, data = self.connect_imap.fetch(mail_imap_id, '(BODY.PEEK[HEADER] FLAGS RFC822.SIZE)')
+        if res != 'OK':
+            raise RuntimeError('Unvalid reply: ' + res)
+
+        flag = ''
+        rem = cmp_flags_email.search(str(data[0][0]))
+        if rem:
+            flag = rem.group(1)
+
+        size = 0
+        rem = cmp_size_mail.search(str(data[0][0]))
+        if rem:
+            try:
+                size = int(rem.group(1))
+            except:
+                size = 0
+
+        headers = email.message_from_bytes(data[0][1])
+        return headers['Message-ID'], flag, size
+
+    def getMessage(self, mail_imap_id):
+        res, data = self.connect_imap.fetch(mail_imap_id, '(RFC822)')
+        if res != 'OK':
+            raise RuntimeError('Unvalid reply: ' + res)
+        return data[0][1]
+
+    def appendMessage(self, folder, data_message, flags):
+        try:
+            typ, dat = self.connect_imap.append(folder, flags, None, data_message)
+        except:
+            typ, dat = self.connect_imap.append(folder, None, None, data_message)
+
+        return typ == 'OK'
+
+
+def secondsToStr(t):
+    return "%d:%02d:%02d.%03d" % \
+           functools.reduce(lambda ll, b: divmod(ll[0], b) + ll[1:],
+                            [(t * 1000,), 1000, 60, 60])
+
+
+def runThreadSyncMail(user, settings_imap):
+
+    append_messages = 0
+    append_size_byte = 0
+
+    start_time = time.time()
+    print('Thread', user, 'start sync')
+
+    src_imap_conn = IMAPServer()
+    dst_imap_conn = IMAPServer()
+    if not src_imap_conn.connect(settings_imap.get('SERVER_IMAP_SOURCE')):
+        return
+
+    if not dst_imap_conn.connect(settings_imap.get('SERVER_IMAP_DESTINATION')):
+        return
+
+    result = src_imap_conn.loginUser(user) \
+             and dst_imap_conn.loginUser(user)
+    if result:
+        print("Capability source: ", src_imap_conn.capability())
+        print("Capability source: ", dst_imap_conn.capability())
+        src_list_folder = src_imap_conn.listMailboxes()
+        # dst_list_folder = self.dst_imap_conn.listMailboxes()
+        for item_folder in src_list_folder:
+            current_mailbox = item_folder.get('mailbox')
+            #print('Folder: %s, Delimiter: %s, Flags: %s' % (current_mailbox,
+            #                                                item_folder.get('delimiter'),
+            #                                                item_folder.get('flags')))
+
+            if not item_folder.get('noselect'):
+                dst_imap_conn.createMailbox(current_mailbox)
+
+                # Fetch destination messages ID
+                print('Thread', user, ' Fetch messages ID ', current_mailbox)
+                dst_message_ids = {}
+
+                src_imap_conn.openFolder(current_mailbox, True)
+                dst_imap_conn.openFolder(current_mailbox)
+
+                result, dst_ids = dst_imap_conn.getListMessagesMailBox(settings_imap.get('filter_email'))
+                if result:
+                    count_dst = 0
+                    for did in dst_ids:
+                        count_dst += 1
+                        msgid, flg, size_msg = dst_imap_conn.getMessageId(did)
+                        dst_message_ids[msgid] = {'flag': flg, 'id': did, 'size_byte': size_msg}
+                        # dst_message_ids.append(msgid)
+
+                    src_message_ids = {}
+                    count_src = 0
+                    result, src_ids = src_imap_conn.getListMessagesMailBox(settings_imap.get('filter_email'))
+                    if result:
+                        for did in src_ids:
+                            count_src += 1
+                            msgid, flg, size_msg = src_imap_conn.getMessageId(did)
+                            src_message_ids[msgid] = {'flag': flg, 'id': did, 'size_byte': size_msg}
+                            # src_message_ids.append(msgid)
+
+                    #print('Source:', len(src_message_ids), "message IDs acquired.")
+                    print('Thread', user, ' start sync mail count src', count_src, 'dst', count_dst)
+                    append_messages_folder = 0
+                    append_size_folder = 0
+                    for src_msg_id in src_message_ids:
+                        if src_msg_id not in dst_message_ids:
+                            msg_data = src_message_ids.get(src_msg_id)
+                            data_message = src_imap_conn.getMessage(msg_data.get('id'))
+                            dst_imap_conn.appendMessage(current_mailbox, data_message, msg_data.get('flag'))
+
+                            append_messages_folder += 1
+                            append_size_folder += msg_data.get('size_byte')
+
+                            print('Append', user, 'message id:', src_msg_id, ' size:', msg_data.get('size_byte'))
+
+                    print('Thread', user, 'Appends to destination count', append_messages_folder, 'size', append_size_folder)
+                    append_messages += append_messages_folder
+                    append_size_byte += append_size_folder
+
+                dst_imap_conn.closeFolder()
+                src_imap_conn.closeFolder()
+
+        src_imap_conn.logOut()
+        dst_imap_conn.logOut()
+    print('Thread', user, ' Finish sync append message', append_messages, 'size', append_size_byte)
+
+    second_execute = secondsToStr(time.time() - start_time)
+    return 'Finish Sync: {uSr}, append messages: {countmsg}, ' \
+           'size: {sZ} byte time executed: {tEx}'.format(uSr=user,
+                                                         countmsg=append_messages,
+                                                         sZ=append_size_byte,
+                                                         tEx=second_execute)
+
+
 class main:
     NAME = 'Sync iredadmin LDAP backend user'
     VERSION = '0.1'
@@ -419,19 +720,37 @@ class main:
     def __init__(self):
         self.ldap_src = None
         self.ldap_dst = None
+        self.src_imap_conn = None
+        self.dst_imap_conn = None
+        self.param_filter_email = {}
 
     def __del__(self):
         self.ldap_src = None
         self.ldap_dst = None
+        self.src_imap_conn = None
+        self.dst_imap_conn = None
+
+    def setFilter(self, argv):
+        if argv.age == 'min':
+            self.param_filter_email['minage'] = argv.countage
+        else:
+            self.param_filter_email['maxage'] = argv.countage
 
     def run(self):
         print('Start sync')
 
         # Instantiate the parser
         parser = argparse.ArgumentParser(description='Sync user ldap backend iredadmin')
+        subparser = parser.add_subparsers(help='List of commands')
+
         parser.add_argument('-d', '--domainsync', help='Sync domain [only domain]', nargs='?', const='*', type=str)
         parser.add_argument('-u', '--usersync', help='Sync user [only user]', nargs='?', const='*', type=str)
         parser.add_argument('-m', '--mailsync', help='sync mail on imap protocol', action='store_true')
+
+        parser_filter = subparser.add_parser('filter', help='parameters filter email sync')
+        parser_filter.add_argument('age', type=str, choices=['min', 'max'], help='type age email')
+        parser_filter.add_argument('countage', type=int, help='count days age mail (min or max)')
+        parser_filter.set_defaults(func=self.setFilter)
 
         program_args = parser.parse_args()
         param_usernsync = program_args.usersync
@@ -459,6 +778,11 @@ class main:
 
             print(self.ldap_src)
             print(self.ldap_dst)
+
+        if param_mailsync:
+            if not param_usernsync:
+                param_usernsync = '*'
+            self.__syncIMAPEmail(param_domainsync, param_usernsync)
 
     def __syncDomain(self, domain_sync):
         # sync domain
@@ -511,14 +835,28 @@ class main:
     def __syncIMAPEmail(self, domain, user):
         # The specified user has advantage over the domain
         if not user or user == '*':
-            user_list = self.ldap_src.getUserList(domain)
+            user_list = []
+            raw_user_list = self.ldap_src.getUserList(domain)
+            for item_user_list in raw_user_list:
+                dn_mail, usr_mail = self.ldap_src.getUserMailNameFromFullDN(item_user_list['dn'])
+                user_list.append(usr_mail)
         else:
             user_list = [user]
 
-        for item_user in user_list:
+        setting_thread = {
+            'SERVER_IMAP_SOURCE': settings.SERVER_IMAP_SOURCE,
+            'SERVER_IMAP_DESTINATION': settings.SERVER_IMAP_DESTINATION,
+            'filter_email': self.param_filter_email
+        }
 
+        with concurrent.futures.ThreadPoolExecutor(max_workers=settings.max_thread_sync_mail) as executor:
+            threadSync = []
 
+            for item_user in user_list:
+                threadSync.append(executor.submit(runThreadSyncMail, user=item_user, settings_imap=setting_thread))
 
+            for future in concurrent.futures.as_completed(threadSync):
+                print(future.result())
 
 
 if __name__ == '__main__':

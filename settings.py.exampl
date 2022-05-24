@@ -7,7 +7,7 @@ mailsend = 'xxx@iredmail.org'
 max_thread_sync_mail = 5
 
 # Setting source server LDAP.
-SERVER_SOURCE = {
+SERVER_SOURCE = dict(
     server='IP or Domain name',
     port=389,
     basedn='o=domains,dc=srv,dc=dc=com,dc=ua',
@@ -16,8 +16,6 @@ SERVER_SOURCE = {
     use_ssl=False,
     storage_mail_base_directory = '/var/vmail/vmail1',
     #for sync mail imap see https://docs.iredmail.org/dovecot.master.user.html
-    master_usr='my_master_user@not-exist.com',
-    master_pwd='PW',
     #over_ssh=dict(
     #    server='',
     #    port=22,
@@ -25,10 +23,10 @@ SERVER_SOURCE = {
     #    password='',
     #    privatekey=''
     #)
-}
+)
 
 # Setting destination server LDAP.
-SERVER_DESTINATION = {
+SERVER_DESTINATION = dict(
     server='IP or Domain name',
     port=386,
     basedn='o=domains,dc=srv,dc=dc=com,dc=ua',
@@ -46,5 +44,24 @@ SERVER_DESTINATION = {
     #    password='',
     #    privatekey=''
     #)
-}
+)
 
+# Setting source server IMAP.
+SERVER_IMAP_SOURCE = dict(
+    server='',
+    port=143,
+    secure='None', # None, SSL, TLS, TLSinsecure, SSLinsecure
+    master_usr='my_master_user@not-exist.com',
+    master_pwd='PW',
+    timeout=30,
+)
+
+# Setting destination server IMAP.
+SERVER_IMAP_DESTINATION = dict(
+    server='',
+    port=143,
+    secure='None', # None, SSL, TLS, insecureTLS, insecureSSL
+    master_usr='my_master_user@not-exist.com',
+    master_pwd='PW',
+    timeout=30,
+)
