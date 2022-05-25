@@ -679,7 +679,7 @@ def runThreadSyncMail(user, settings_imap):
                 dst_imap_conn.createMailbox(current_mailbox)
 
                 # Fetch destination messages ID
-                logger.info('Thread %s fetch messages ID from %s', user, current_mailbox)
+                logger.info('Thread %s, fetch messages ID from %s', user, current_mailbox)
                 dst_message_ids = {}
 
                 src_imap_conn.openFolder(current_mailbox, True)
