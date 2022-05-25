@@ -69,8 +69,6 @@ USER_ATTRS_ALL = tuple(list(USER_ATTRS_SYNC) + [
 # Email address.
 RE_EMAIL_TEST = r"""[\w\-\#][\w\-\.\+\=\/\&\#]*@[\w\-][\w\-\.]*\.[a-zA-Z0-9\-]{2,15}"""
 cmp_email = re.compile(r"^" + RE_EMAIL_TEST + r"$", re.IGNORECASE | re.DOTALL)
-PATTERN_FLAGS_ID = r'FLAGS \(\\\\(.*?)\)'
-cmp_flags_email = re.compile(PATTERN_FLAGS_ID)
 PATERN_SIZE_MAIL = r'RFC822.SIZE\s(.*?)\s'
 cmp_size_mail = re.compile(PATERN_SIZE_MAIL)
 
@@ -115,16 +113,16 @@ class LdapServer:
             self.con.unbind()
             self.con = None
 
-    def connect(self, setting_сonnect):
-        if not setting_сonnect:
+    def connect(self, setting_connect):
+        if not setting_connect:
             raise RuntimeError('Error setting server connected')
 
-        self.srvdn = setting_сonnect.get('server')
-        self.srvport = setting_сonnect.get('port')
-        self.baseDN = setting_сonnect.get('basedn')
-        self.bind_dn = setting_сonnect.get('bind_dn')
-        self.bind_password = setting_сonnect.get('bind_password')
-        self.use_ssl = setting_сonnect.get('use_ssl', False)
+        self.srvdn = setting_connect.get('server')
+        self.srvport = setting_connect.get('port')
+        self.baseDN = setting_connect.get('basedn')
+        self.bind_dn = setting_connect.get('bind_dn')
+        self.bind_password = setting_connect.get('bind_password')
+        self.use_ssl = setting_connect.get('use_ssl', False)
         if not self.baseDN:
             self.baseDN = self.__getBaseDNFromUser(self.bind_dn)
 
@@ -135,27 +133,29 @@ class LdapServer:
             self.con = Connection(s, user=self.bind_dn, password=self.bind_password)
 
         if not self.con.bind():
-            return (False, self.con.result)
+            return False, self.con.result
 
-        return (True,)
+        return True,
 
-    def __parceserverldap(self, paramserver: str):
-        p = paramserver.split(':')
+    @staticmethod
+    def __parceServerLDAP(param_server: str):
+        p = param_server.split(':')
         if len(p) != 3:
-            logger.error('Error parameter server \'ldap[s]://[ip]:port\': {}'.format(paramserver))
+            logger.error('Error parameter server \'ldap[s]://[ip]:port\': {}'.format(param_server))
             return None
 
-        ssl = False
+        use_ssl = False
         if p[0] == 'ldaps':
-            ssl = True
+            use_ssl = True
 
         srv = p[1].replace('//', '')
         port = int(p[2])
-        return dict(server=srv, port=port, use_ssl=ssl)
+        return dict(server=srv, port=port, use_ssl=use_ssl)
 
-    def __getBaseDNFromUser(self, usename: str):
+    @staticmethod
+    def __getBaseDNFromUser(user_name: str):
         bDN = ''
-        p = usename.split(',')
+        p = user_name.split(',')
         for dc in p:
             if dc.find('dc=') != -1:
                 bDN += ',' + dc
@@ -297,19 +297,20 @@ class LdapServer:
         # add attributes directory new server
         storage_base_directory = setting_account.get('storage_mail_base_directory')
         if not storage_base_directory:
-            raise BaseException('Not setting storage base directory')
+            logger.error('IMAP error add user {} Not setting storage base directory'.format(user_mail))
+            return False
 
         # Get base directory and storage node.
         std = storage_base_directory.rstrip('/').split('/')
         dst_mail_message_store = std.pop()
         dst_storage_base = '/'.join(std)
 
-        maildir_domain = str(domain).lower()
-        indexstr, str1 = self.__getnextchar(username)
+        # maildir_domain = str(domain).lower()
+        index_str, str1 = self.__getNextChar(username)
         str2 = str3 = str1
         if len(username) >= 3:
-            indexstr, str2 = self.__getnextchar(username, indexstr)
-            indexstr, str3 = self.__getnextchar(username, indexstr)
+            index_str, str2 = self.__getNextChar(username, index_str)
+            index_str, str3 = self.__getNextChar(username, index_str)
         elif len(username) == 2:
             str2 = str3 = username[1]
 
@@ -336,7 +337,7 @@ class LdapServer:
         return res
 
     @staticmethod
-    def __getnextchar(source_string, index=0):
+    def __getNextChar(source_string, index=0):
         i_len = len(source_string)
         ret_str = source_string[index]
         while index < i_len:
@@ -375,7 +376,6 @@ class LdapServer:
 
         if delete_dst:
             for attr in dst_attr:
-                src_val = dst_attr.get(attr)
                 if attr not in src_attr:
                     diffAttr[attr] = [(ldap3.MODIFY_DELETE, [])]
 
@@ -564,8 +564,6 @@ class IMAPServer:
         self.connect_imap.unselect()
 
     def getListMessagesMailBox(self, param_search={}):
-        msg_ids = []
-        result = False
         cmd_search = self.__getCmdSearchMail(param_search)
         try:
             rv, data = self.connect_imap.search(None, '(ALL)', cmd_search)
@@ -602,10 +600,23 @@ class IMAPServer:
             logger.error('IMAP error get message ID %s, result %s - %s', mail_imap_id, res, str(data))
             return None, None, None
 
-        flag = ''
-        rem = cmp_flags_email.search(str(data[0][0]))
-        if rem:
-            flag = rem.group(1).replace('\\\\', '').replace('\\', '')
+        # remove flag Recent but This flag can not
+        # be altered by the client
+
+        flag_t = imaplib.ParseFlags(data[0][0])
+        flag = None
+        index_flag = 0
+        for cur_flag in flag_t:
+            str_flag = cur_flag.decode("utf-8")
+            if 'Recent' not in str_flag:
+                if index_flag == 0:
+                    if str_flag[0] == '\\':
+                        flag = '{}'.format(str_flag)
+                    else:
+                        flag = '\\{}'.format(str_flag)
+                else:
+                    flag += ' {f}'.format(f=str_flag.replace('\\', ''))
+                index_flag += 1
 
         size = 0
         rem = cmp_size_mail.search(str(data[0][0]))
@@ -640,6 +651,15 @@ class IMAPServer:
 
         return typ == 'OK'
 
+    def updateMessage(self, mail_imap_id, flags):
+        try:
+            typ, dat = self.connect_imap.uid('store', mail_imap_id, '+FLAGS', flags)
+        except Exception as e:
+            logger.error('IMAP error update flags message %s id %s, flags: %s, ex: %s',
+                         self.server, mail_imap_id, flags, str(e))
+
+        return typ == 'OK'
+
 
 def secondsToStr(t):
     return "%d:%02d:%02d.%03d" % \
@@ -662,8 +682,7 @@ def runThreadSyncMail(user, settings_imap):
     if not dst_imap_conn.connect(settings_imap.get('SERVER_IMAP_DESTINATION')):
         return
 
-    result = src_imap_conn.loginUser(user) \
-             and dst_imap_conn.loginUser(user)
+    result = src_imap_conn.loginUser(user) and dst_imap_conn.loginUser(user)
     if result:
         logger.info('Capability source: %s', src_imap_conn.capability())
         logger.info('Capability source: %s', dst_imap_conn.capability())
@@ -687,17 +706,23 @@ def runThreadSyncMail(user, settings_imap):
 
                 result, dst_ids = dst_imap_conn.getListMessagesMailBox(settings_imap.get('filter_email'))
                 if result:
+                    count_all_dst = len(dst_ids)
                     count_dst = 0
                     for did in dst_ids:
                         count_dst += 1
                         msgid, flg, size_msg = dst_imap_conn.getMessageId(did)
                         dst_message_ids[msgid] = {'flag': flg, 'id': did, 'size_byte': size_msg}
+                        if (count_dst % 10) == 0:
+                            logger.debug('Message parse %i% (%i in i%)', count_dst // count_all_dst, count_dst,
+                                         count_all_dst)
                         # dst_message_ids.append(msgid)
 
                     src_message_ids = {}
                     count_src = 0
+                    count_all_crs = 0
                     result, src_ids = src_imap_conn.getListMessagesMailBox(settings_imap.get('filter_email'))
                     if result:
+                        count_all_crs = len(src_ids)
                         for did in src_ids:
                             count_src += 1
                             msgid, flg, size_msg = src_imap_conn.getMessageId(did)
@@ -705,6 +730,9 @@ def runThreadSyncMail(user, settings_imap):
                                 src_message_ids[msgid] = {'flag': flg, 'id': did, 'size_byte': size_msg}
                             elif size_msg != src_message_ids[msgid].get('size_byte'):
                                 src_message_ids[msgid] = {'flag': flg, 'id': did, 'size_byte': size_msg}
+                            if (count_src % 10) == 0:
+                                logger.debug('Message parse %i% (%i in i%)', count_dst // count_all_crs, count_src,
+                                             count_all_crs)
                             # src_message_ids.append(msgid)
 
                     # print('Source:', len(src_message_ids), "message IDs acquired.")
@@ -712,25 +740,23 @@ def runThreadSyncMail(user, settings_imap):
                                 user, current_mailbox, str(count_src), str(count_dst))
                     append_messages_folder = 0
                     append_size_folder = 0
-                    duplicate_msg = {}
+                    count_src = 0
                     for src_msg_id in src_message_ids:
+                        count_src += 1
+                        msg_data = src_message_ids.get(src_msg_id)
                         if src_msg_id not in dst_message_ids:
-                            msg_data = src_message_ids.get(src_msg_id)
                             data_message = src_imap_conn.getMessage(msg_data.get('id'))
                             dst_imap_conn.appendMessage(current_mailbox, data_message, msg_data.get('flag'))
 
                             append_messages_folder += 1
                             append_size_folder += msg_data.get('size_byte')
 
-                            logger.info('Thread %s, append message id:%s size:%i', user, src_msg_id,
-                                        msg_data.get('size_byte'))
                         else:
-                            count_duplicate_msg = duplicate_msg.get(src_msg_id)
-                            if not count_duplicate_msg:
-                                count_duplicate_msg = 1
-                            else:
-                                count_duplicate_msg += 1
-                            duplicate_msg[src_msg_id] = count_duplicate_msg
+                            dst_imap_conn.updateMessage(msg_data.get('id'), msg_data.get('flag'))
+
+                        if (count_src % 10) == 0:
+                            logger.debug('Thread %s, message processing %i% (%i in %i)',
+                                         user, (count_src // count_all_crs), count_src, count_all_crs)
 
                     logger.info('Thread %s, Appends to destination count:%i size:%i',
                                 user, append_messages_folder, append_size_folder)
