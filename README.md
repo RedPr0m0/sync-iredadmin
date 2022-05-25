@@ -5,7 +5,10 @@
 Sync-iredadmin is an python scrypt for syncing domain, user, copying and migrating email
 mailboxes between two iRedAdmin servers, one way, and without duplicates.
 Sync domain and user only used iRedAdmin LDAP backend.
-Email sync run in multithreading process. Set up count multithreading process in setting.py
+Mail sync run in multithreading process. Set up count multithreading process in setting.py
+
+Before starting, copy settings.py.exampl to settings.py, and be sure to set all the necessary 
+parameters in the settings.py file.
 
 ## Used scrypt command line
  
