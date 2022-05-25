@@ -720,8 +720,9 @@ def runThreadSyncMail(user, settings_imap):
                         msgid, flg, size_msg = dst_imap_conn.getMessageId(did)
                         dst_message_ids[msgid] = {'flag': flg, 'id': did, 'size_byte': size_msg}
                         if logger.isEnabledFor(logging.DEBUG) and (count_dst % 10) == 0:
-                            logger.debug('Thread %s, Message dst parse %s %% (%s in %s)', str(round(count_dst/count_all_dst*100)),
-                                         user, str(count_dst), str(count_all_dst))
+                            logger.debug('Thread %s, Message dst parse %s %% (%s in %s)',
+                                         user, str(round(count_dst/count_all_dst*100)),
+                                         str(count_dst), str(count_all_dst))
                         # dst_message_ids.append(msgid)
 
                     src_message_ids = {}
