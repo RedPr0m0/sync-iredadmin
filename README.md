@@ -24,6 +24,10 @@ parameters in the settings.py file.
           {min,max}   type age email
           countage    count days age mail (min or max)     
 
+## Need to do
+
+[ ] Connect LDAP server over SSH
+
 ## License
 
 ImapSync Client is licensed under the [MIT License](LICENSE)
