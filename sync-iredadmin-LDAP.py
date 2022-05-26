@@ -72,6 +72,9 @@ cmp_email = re.compile(r"^" + RE_EMAIL_TEST + r"$", re.IGNORECASE | re.DOTALL)
 PATERN_SIZE_MAIL = r'RFC822.SIZE\s(.*?)\s'
 cmp_size_mail = re.compile(PATERN_SIZE_MAIL)
 
+# IGNORED FLAGS MAIL
+IGNORED_FLAGS_MAIL = r'\\RECENT \\NONJUNK \\JUNK'
+
 # logger
 # logging.basicConfig(filename='sync-iredadmin.log', encoding='utf-8', level=logging.INFO)
 FORMATTER_LOG = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -615,7 +618,7 @@ class IMAPServer:
         index_flag = 0
         for cur_flag in flag_t:
             str_flag = cur_flag.decode("utf-8")
-            if 'Recent' not in str_flag:
+            if str_flag.upper() not in IGNORED_FLAGS_MAIL:
                 if index_flag == 0:
                     if str_flag[0] == '\\':
                         flag = '{}'.format(str_flag)
@@ -645,6 +648,7 @@ class IMAPServer:
         return data[0][1]
 
     def appendMessage(self, folder, data_message, flags, mail_user=''):
+        typ = 'None'
         try:
             typ, dat = self.connect_imap.append(folder, flags, None, data_message)
         except Exception as e:
@@ -659,6 +663,7 @@ class IMAPServer:
         return typ == 'OK'
 
     def updateMessage(self, mail_imap_id, flags, mail_user=''):
+        typ = 'None'
         try:
             typ, dat = self.connect_imap.uid('store', mail_imap_id, '+FLAGS', flags)
         except Exception as e:
@@ -677,6 +682,8 @@ def secondsToStr(t):
 def runThreadSyncMail(user, settings_imap):
     append_messages = 0
     append_size_byte = 0
+    updated_messages = 0
+    error_updates = 0
 
     start_time = time.time()
     logger.info('Thread %s start sync', user)
@@ -708,8 +715,18 @@ def runThreadSyncMail(user, settings_imap):
                 logger.info('Thread %s, fetch messages ID from %s', user, current_mailbox)
                 dst_message_ids = {}
 
-                src_imap_conn.openFolder(current_mailbox, True)
-                dst_imap_conn.openFolder(current_mailbox)
+                src_res, src_msg = src_imap_conn.openFolder(current_mailbox, True)
+                dst_res, dst_msg = dst_imap_conn.openFolder(current_mailbox)
+                if not src_res or not dst_res:
+                    if not src_res:
+                        logger.error('Thread %s, error open src folder %s - %s', user, current_mailbox, src_msg)
+                    else:
+                        src_imap_conn.closeFolder()
+                    if not dst_res:
+                        logger.error('Thread %s, error open dst folder %s - %s', user, current_mailbox, dst_msg)
+                    else:
+                        dst_imap_conn.closeFolder()
+                    continue
 
                 result, dst_ids = dst_imap_conn.getListMessagesMailBox(settings_imap.get('filter_email'))
                 if result:
@@ -721,7 +738,7 @@ def runThreadSyncMail(user, settings_imap):
                         dst_message_ids[msgid] = {'flag': flg, 'id': did, 'size_byte': size_msg}
                         if logger.isEnabledFor(logging.DEBUG) and (count_dst % 10) == 0:
                             logger.debug('Thread %s, Message dst parse %s %% (%s in %s)',
-                                         user, str(round(count_dst/count_all_dst*100)),
+                                         user, str(round(count_dst / count_all_dst * 100)),
                                          str(count_dst), str(count_all_dst))
                         # dst_message_ids.append(msgid)
 
@@ -740,38 +757,52 @@ def runThreadSyncMail(user, settings_imap):
                                 src_message_ids[msgid] = {'flag': flg, 'id': did, 'size_byte': size_msg}
                             if logger.isEnabledFor(logging.DEBUG) and (count_src % 10) == 0:
                                 logger.debug('Thread %s, Message src parse %s %% (%s in %s)',
-                                             user, str(round(count_src/count_all_crs*100)),
+                                             user, str(round(count_src / count_all_crs * 100)),
                                              str(count_src), str(count_all_crs))
                             # src_message_ids.append(msgid)
 
                     # print('Source:', len(src_message_ids), "message IDs acquired.")
                     logger.info('Thread %s, start sync mail %s, count src:%s dst:%s',
                                 user, current_mailbox, str(count_src), str(count_dst))
+
                     append_messages_folder = 0
                     append_size_folder = 0
                     count_src = 0
+                    count_error_sync = 0
+                    count_error_sync_flags = 0
                     for src_msg_id in src_message_ids:
                         count_src += 1
                         msg_data = src_message_ids.get(src_msg_id)
                         if src_msg_id not in dst_message_ids:
                             data_message = src_imap_conn.getMessage(msg_data.get('id'))
-                            dst_imap_conn.appendMessage(current_mailbox, data_message, msg_data.get('flag'), user)
+                            res_sync = dst_imap_conn.appendMessage(current_mailbox,
+                                                                   data_message, msg_data.get('flag'), user)
+                            if not res_sync:
+                                count_error_sync += 1
+                                logger.error('Thread %s, error append %s message %s',
+                                             user, current_mailbox, src_msg_id)
 
                             append_messages_folder += 1
                             append_size_folder += msg_data.get('size_byte')
 
                         else:
-                            dst_imap_conn.updateMessage(msg_data.get('id'), msg_data.get('flag'), user)
+                            res_sync = dst_imap_conn.updateMessage(msg_data.get('id'), msg_data.get('flag'), user)
+                            if not res_sync:
+                                count_error_sync_flags += 1
+                                logger.error('Thread %s, error update %s flags message %s',
+                                             user, current_mailbox, src_msg_id)
 
                         if logger.isEnabledFor(logging.DEBUG) and (count_src % 10) == 0:
                             logger.debug('Thread %s, message processing %s %% (%s in %s)',
-                                         user, str(round(count_src/count_all_crs*100)),
+                                         user, str(round(count_src / count_all_crs * 100)),
                                          str(count_src), str(count_all_crs))
 
-                    logger.info('Thread %s, Appends to destination count:%s size:%s',
-                                user, str(append_messages_folder), str(append_size_folder))
+                    logger.info('Thread %s, Appends to destination count:%s size:%s, count error:%s',
+                                user, str(append_messages_folder), str(append_size_folder),
+                                str(count_error_sync_flags + count_error_sync))
                     append_messages += append_messages_folder
                     append_size_byte += append_size_folder
+                    error_updates += count_error_sync_flags + count_error_sync
 
                 dst_imap_conn.closeFolder()
                 src_imap_conn.closeFolder()
@@ -783,10 +814,11 @@ def runThreadSyncMail(user, settings_imap):
 
     second_execute = secondsToStr(time.time() - start_time)
     return 'Finish Sync: {uSr}, append messages: {countmsg}, ' \
-           'size: {sZ} byte time executed: {tEx}'.format(uSr=user,
-                                                         countmsg=append_messages,
-                                                         sZ=append_size_byte,
-                                                         tEx=second_execute)
+           'size: {sZ} byte, error updated: {eUPD} , time executed: {tEx}'.format(uSr=user,
+                                                                                  countmsg=append_messages,
+                                                                                  eUPD=error_updates,
+                                                                                  sZ=append_size_byte,
+                                                                                  tEx=second_execute)
 
 
 class main:
@@ -906,6 +938,8 @@ class main:
 
     def __syncIMAPEmail(self, domain, user):
         # The specified user has advantage over the domain
+        logger.info('===================Start sync mail============================')
+
         if not user or user == '*':
             user_list = []
             raw_user_list = self.ldap_src.getUserList(domain)
@@ -938,7 +972,7 @@ class main:
                     logger.info('%s sync: %s', user_sync, result_sync)
                     r_sync[user_sync] = {'result': True, 'msg': result_sync}
 
-        logger.info('Finish all sync')
+        logger.info('===================Finish all sync============================')
         for item_user in user_list:
             result_sync_user = r_sync.get(item_user)
             if result_sync_user:
