@@ -7,6 +7,11 @@
 #   python MigrateUserLDAP.py
 # ------------------------------------------------------------------
 
+import warnings
+from cryptography.utils import CryptographyDeprecationWarning
+with warnings.catch_warnings():
+    warnings.filterwarnings('ignore', category=CryptographyDeprecationWarning)
+
 import argparse
 import imaplib
 import re
@@ -22,6 +27,7 @@ import settings
 import concurrent.futures
 import functools
 import logging
+import asyncssh
 
 # Default groups which will be created while create a new domain.
 # WARNING: Don't use unicode string here.
@@ -93,6 +99,60 @@ fh.setFormatter(FORMATTER_LOG)
 logger.addHandler(fh)
 
 
+class ProviderSSH:
+
+    def __init__(self):
+        self.connect_ssh = None
+        self.listener = None
+        self.listen_port = None
+        self.is_connected = False
+
+    def __del__(self):
+        if self.is_connected:
+            self.connect_ssh.close()
+            self.connect_ssh = None
+            self.listener = None
+            self.listen_port = None
+
+    def connect(self, setting_connect):
+        param_connect = setting_connect.get('over_ssh')
+        server = param_connect.get('server')
+        port = param_connect.get('port')
+        username = param_connect.get('username')
+        pwd = param_connect.get('pwd')
+        privKey = param_connect.get('privkey')
+
+        self.is_connected = False
+        try:
+            if pwd:
+                self.connect_ssh = asyncssh.connect(server=server, port=port, username=username, password=pwd)
+            else:
+                self.connect_ssh = asyncssh.connect(server=server, port=port, username=username, client_keys=[privKey])
+
+            if self.connect_ssh:
+                server_dst = setting_connect.get('server')
+                port_dst = setting_connect.get('server')
+                self.listener = self.connect_ssh.forward_local_port('', 0, server_dst, port_dst)
+                self.listen_port = self.listener.get_port()
+                logger.info('SSH Listening %s on port %s', server_dst, str(self.listen_port))
+                self.is_connected = True
+            else:
+                logger.error('SSH Error connected to ssh server %s on port %s', server, str(port))
+
+        except socket.gaierror as e:
+            (err, desc) = e
+            logger.error("SSH ERROR: problem looking up server '%s' (%s %s)", server, err, desc)
+        except socket.error as e:
+            logger.error("SSH ERROR: could not connect to '%s' (%s)", server, str(e))
+        except Exception as e:
+            logger.error("SSH ERROR: Host %s. %s", server, str(e))
+
+        return self.is_connected
+
+    def getPort(self):
+        return self.listener.listen_port
+
+
 class LdapServer:
 
     def __init__(self):
@@ -108,6 +168,7 @@ class LdapServer:
         self.ssh_username = ''
         self.ssh_password = ''
         self.privatekey = ''
+        self.provider_ssh = None
 
     def __del__(self):
         self.__disconnect()
@@ -125,10 +186,23 @@ class LdapServer:
 
     def connect(self, setting_connect):
         if not setting_connect:
-            raise RuntimeError('Error setting server connected')
+            logger.error('LDAP Error setting server connected')
+            return False, 'LDAP Error setting server connected'
+
+        over_ssh = setting_connect.get('over_ssh')
+        if over_ssh:
+            self.provider_ssh = ProviderSSH()
+            result_over_ssh = self.provider_ssh.connect(setting_connect)
+            if not result_over_ssh:
+                logger.warning('LDAP Warn error connected server SHH')
+                return False, 'Error connected server SSH'
 
         self.srvdn = setting_connect.get('server')
-        self.srvport = setting_connect.get('port')
+        if over_ssh:
+            self.srvport = self.provider_ssh.getPort()
+        else:
+            self.srvport = setting_connect.get('port')
+
         self.baseDN = setting_connect.get('basedn')
         self.bind_dn = setting_connect.get('bind_dn')
         self.bind_password = setting_connect.get('bind_password')
@@ -474,14 +548,14 @@ class IMAPServer:
         try:
             socket.setdefaulttimeout(l_timeout)
             if 'SSL' in l_secure:
-                print("Connecting to '%s' TCP port %d, SSL" % (l_server, l_port))
+                logger.info("Connecting to '%s' TCP port %s, SSL", l_server, str(l_port))
                 if 'insecure' in l_secure:
                     ssl_context = ssl._create_unverified_context()
                     self.connect_imap = imaplib.IMAP4_SSL(host=l_server, port=l_port, ssl_context=ssl_context)
                 else:
                     self.connect_imap = imaplib.IMAP4_SSL(l_server, l_port)
             elif 'TLS' in l_secure:
-                print("Connecting to '%s' TCP port %d, SSL" % (l_server, l_port))
+                logger.info("Connecting to '%s' TCP port %s, SSL", l_server, str(l_port))
                 self.connect_imap = imaplib.IMAP4(l_server, l_port)
 
                 if 'insecure' in l_secure:
@@ -491,18 +565,17 @@ class IMAPServer:
 
                 self.connect_imap.starttls(ssl_context=tls_context)
             else:
-                print("Connecting to '%s' TCP port %d" % (l_server, l_port))
+                logger.info("Connecting to '%s' TCP port %d", l_server, str(l_port))
                 self.connect_imap = imaplib.IMAP4(l_server, l_port)
 
             result_connect = True
         except socket.gaierror as e:
             (err, desc) = e
-            print("ERROR: problem looking up server '%s' (%s %s)" % (l_server, err, desc))
+            logger.error("ERROR: problem looking up server '%s' (%s %s)" , l_server, err, desc)
         except socket.error as e:
-            print("ERROR: could not connect to '%s' (%s)" % (l_server, e))
+            logger.error("ERROR: could not connect to '%s' (%s)", l_server, str(e))
         except Exception as e:
-            print("ERROR: Host %s" % l_server)
-            print(str(e))
+            logger.error("ERROR: Host %s. %s", l_server, str(e))
 
         return result_connect
 
@@ -576,7 +649,7 @@ class IMAPServer:
     def getListMessagesMailBox(self, param_search={}):
         cmd_search = self.__getCmdSearchMail(param_search)
         try:
-            rv, data = self.connect_imap.search(None, '(ALL)', cmd_search)
+            rv, data = self.connect_imap.search(None, cmd_search)
             if rv != 'OK':
                 logger.error('IMAP error list message mailbox %s, result %s - %s', self.server, rv, str(data))
                 return False, []
@@ -600,7 +673,7 @@ class IMAPServer:
 
         if minage:
             date = (datetime.date.today() - datetime.timedelta(int(minage))).strftime("%d-%b-%Y")
-            cmd += ' SENTBEFORE {data}'.format(data=date)
+            cmd += ' SINCE {data}'.format(data=date)
         cmd += ')'
         return cmd
 
@@ -838,12 +911,6 @@ class main:
         self.src_imap_conn = None
         self.dst_imap_conn = None
 
-    def setFilter(self, argv):
-        if argv.age == 'min':
-            self.param_filter_email['minage'] = argv.countage
-        else:
-            self.param_filter_email['maxage'] = argv.countage
-
     def run(self):
         logger.info('Start sync iRedMail')
 
@@ -858,12 +925,17 @@ class main:
         parser_filter = subparser.add_parser('filter', help='parameters filter email sync')
         parser_filter.add_argument('age', type=str, choices=['min', 'max'], help='type age email')
         parser_filter.add_argument('countage', type=int, help='count days age mail (min or max)')
-        parser_filter.set_defaults(func=self.setFilter)
 
         program_args = parser.parse_args()
         param_usernsync = program_args.usersync
         param_domainsync = program_args.domainsync
         param_mailsync = program_args.mailsync
+        vars_param = vars(program_args)
+        if vars_param.get('age'):
+            if program_args.age == 'min':
+                self.param_filter_email['minage'] = vars_param.get('countage')
+            else:
+                self.param_filter_email['maxage'] = vars_param.get('countage')
 
         if param_domainsync or param_usernsync:
             self.ldap_src = LdapServer()
